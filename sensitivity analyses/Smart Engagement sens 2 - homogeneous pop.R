@@ -63,18 +63,18 @@ simulate_engagement <- function(pop, intervention, main_effect_size, hte_effect_
 }
 
 simulate_ab_tests <- function(n, main_effect_size, hte_effect_size) {
-  pop <- simulate_population(n)
+  pop <- simulate_population(round(n/3))
   
   pop_test1 <- pop
-  pop_test1$intervention <- sample(c("empathetic", "factual"), n, replace = TRUE)
+  pop_test1$intervention <- sample(c("empathetic", "factual"), round(n/3), replace = TRUE)
   pop_test1 <- simulate_engagement(pop_test1, pop_test1$intervention, main_effect_size, hte_effect_size)
   
   pop_test2 <- pop
-  pop_test2$intervention <- sample(c("weekday", "weekend"), n, replace = TRUE)
+  pop_test2$intervention <- sample(c("weekday", "weekend"), round(n/3), replace = TRUE)
   pop_test2 <- simulate_engagement(pop_test2, pop_test2$intervention, main_effect_size, hte_effect_size)
   
   pop_test3 <- pop
-  pop_test3$intervention <- sample(c("LLM", "human"), n, replace = TRUE)
+  pop_test3$intervention <- sample(c("LLM", "human"), round(n/3), replace = TRUE)
   pop_test3 <- simulate_engagement(pop_test3, pop_test3$intervention, main_effect_size, hte_effect_size)
   
   return(list(pop_test1, pop_test2, pop_test3))
@@ -226,9 +226,9 @@ calculate_power_and_fpr <- function(n, method, main_effect_size, hte_effect_size
     power_age <- true_positive_age / (total_tests * length(pop_list))
     power_race <- true_positive_race / (total_tests * length(pop_list))
     power_disease <- true_positive_disease / (total_tests * length(pop_list))
-    fpr_age <- false_positive_age / (total_tests * length(pop_list))
-    fpr_race <- false_positive_race / (total_tests * length(pop_list))
-    fpr_disease <- false_positive_disease / (total_tests * length(pop_list))
+    fpr_age <- false_positive_age / (total_tests * length(pop_list)/3)
+    fpr_race <- false_positive_race / (total_tests * length(pop_list)/3)
+    fpr_disease <- false_positive_disease / (total_tests * length(pop_list)/3)
   } else {
     power_age <- true_positive_age / total_tests
     power_race <- true_positive_race / total_tests
