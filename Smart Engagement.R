@@ -1,3 +1,4 @@
+# Load required libraries
 library(dplyr)
 library(tidyverse)
 
@@ -91,68 +92,52 @@ simulate_smart <- function(n, main_effect_size, hte_effect_size) {
 }
 
 calculate_cost_effectiveness <- function(n, method, main_effect_size, hte_effect_size) {
-  pop <- simulate_population(n)
+  fixed_costs <- 89750 # Annual fixed costs
   
   if (method == "ab") {
-    pop_empathetic <- simulate_engagement(pop, "empathetic", main_effect_size, hte_effect_size)
-    pop_factual <- simulate_engagement(pop, "factual", main_effect_size, hte_effect_size)
-    pop_weekday <- simulate_engagement(pop, "weekday", main_effect_size, hte_effect_size)
-    pop_weekend <- simulate_engagement(pop, "weekend", main_effect_size, hte_effect_size)
-    pop_llm <- simulate_engagement(pop, "LLM", main_effect_size, hte_effect_size)
-    pop_human <- simulate_engagement(pop, "human", main_effect_size, hte_effect_size)
+    pop_list <- simulate_ab_tests(n, main_effect_size, hte_effect_size)
     
-    cost <- sum(pop_empathetic$engagement) * 1.13 + 
-      sum(pop_factual$engagement) * 0.60 +
-      sum(pop_weekday$engagement) * 0.03 +
-      sum(pop_weekend$engagement) * 0.10 +
-      sum(pop_llm$engagement) * 0.60 +
-      sum(pop_human$engagement) * 5.60
+    cost <- sum(sapply(pop_list, function(pop) {
+      sum(pop$engagement * ifelse(pop$intervention == "empathetic", 1.23,
+                                  ifelse(pop$intervention == "factual", 0.63,
+                                         ifelse(pop$intervention == "weekday" | pop$intervention == "weekend", 0.03,
+                                                ifelse(pop$intervention == "LLM", 1.23, 5.63)))))
+    }))
     
-    effectiveness <- length(unique(c(
-      pop_empathetic$id[pop_empathetic$engagement == 1],
-      pop_factual$id[pop_factual$engagement == 1],
-      pop_weekday$id[pop_weekday$engagement == 1],
-      pop_weekend$id[pop_weekend$engagement == 1],
-      pop_llm$id[pop_llm$engagement == 1],
-      pop_human$id[pop_human$engagement == 1]
-    ))) / n
+    effectiveness <- sum(sapply(pop_list, function(pop) sum(pop$engagement))) / (3 * n)
     
-  } else {
-    pop_empathetic <- simulate_engagement(pop, "empathetic", main_effect_size, hte_effect_size)
-    non_responders_weekday <- pop[pop_empathetic$engagement == 0, ]
-    non_responders_weekend <- pop[pop_empathetic$engagement == 0, ]
-    non_responders_human <- pop[pop_empathetic$engagement == 0, ]
+  } else { # SMART design
+    pop <- simulate_smart(n, main_effect_size, hte_effect_size)
     
-    if (nrow(non_responders_weekday) > 0) {
-      non_responders_weekday <- simulate_engagement(non_responders_weekday, "weekday", main_effect_size, hte_effect_size)
+    cost <- sum(pop$engagement * 1.23) # Stage 1
+    non_responders <- pop[pop$engagement == 0, ]
+    if (nrow(non_responders) > 0) {
+      cost <- cost + nrow(non_responders) * 0.03 # Stage 2
+      non_responders <- non_responders[non_responders$engagement == 0, ]
+      if (nrow(non_responders) > 0) {
+        cost <- cost + sum(non_responders$engagement * ifelse(non_responders$intervention3 == "LLM", 1.23, 5.63)) # Stage 3
+      }
     }
     
-    if (nrow(non_responders_weekend) > 0) {
-      non_responders_weekend <- simulate_engagement(non_responders_weekend, "weekend", main_effect_size, hte_effect_size)
-    }
-    
-    if (nrow(non_responders_human) > 0) {
-      non_responders_human <- simulate_engagement(non_responders_human, "human", main_effect_size, hte_effect_size)
-    }
-    
-    cost <- sum(pop_empathetic$engagement) * 1.13 +
-      sum(non_responders_weekday$engagement) * 0.03 +
-      sum(non_responders_weekend$engagement) * 0.10 +
-      sum(non_responders_human$engagement) * 5.60
-    
-    effectiveness <- length(unique(c(
-      pop_empathetic$id[pop_empathetic$engagement == 1],
-      non_responders_weekday$id[non_responders_weekday$engagement == 1],
-      non_responders_weekend$id[non_responders_weekend$engagement == 1],
-      non_responders_human$id[non_responders_human$engagement == 1]
-    ))) / n
+    effectiveness <- sum(pop$engagement) / n
   }
   
+  total_cost <- fixed_costs + cost
+  
   if (effectiveness == 0) {
-    return(list(cost = cost, effectiveness = effectiveness, cost_effectiveness = Inf))
+    return(list(cost = total_cost, effectiveness = effectiveness, cost_effectiveness = Inf))
   } else {
-    return(list(cost = cost, effectiveness = effectiveness, cost_effectiveness = cost / effectiveness))
+    return(list(cost = total_cost, effectiveness = effectiveness, cost_effectiveness = total_cost / effectiveness))
   }
+}
+
+calculate_net_benefit <- function(pop, threshold) {
+  TP <- sum(pop$engagement == 1)
+  FP <- sum(pop$engagement == 0)
+  N <- nrow(pop)
+  
+  NB <- (TP/N) - (FP/N) * (threshold / (1 - threshold))
+  return(NB)
 }
 
 calculate_power_and_fpr <- function(n, method, main_effect_size, hte_effect_size, total_tests = 100) {
@@ -222,15 +207,25 @@ calculate_power_and_fpr <- function(n, method, main_effect_size, hte_effect_size
               fpr_age = fpr_age, fpr_race = fpr_race, fpr_disease = fpr_disease))
 }
 
-
 run_simulations <- function(n, method, main_effect_size, hte_effect_size, num_bootstraps = 10, total_tests = 100) {
   results <- replicate(num_bootstraps, {
     power_and_fpr <- calculate_power_and_fpr(n, method, main_effect_size, hte_effect_size, total_tests)
     cost_effectiveness <- calculate_cost_effectiveness(n, method, main_effect_size, hte_effect_size)
+    
+    # Calculate net benefit for a range of thresholds
+    if (method == "ab") {
+      pop_list <- simulate_ab_tests(n, main_effect_size, hte_effect_size)
+      pop <- do.call(rbind, pop_list)
+    } else {
+      pop <- simulate_smart(n, main_effect_size, hte_effect_size)
+    }
+    net_benefits <- sapply(seq(0.05, 0.30, by = 0.01), function(threshold) calculate_net_benefit(pop, threshold))
+    
     c(power_and_fpr$power_age, power_and_fpr$power_race, power_and_fpr$power_disease,
       power_and_fpr$fpr_age, power_and_fpr$fpr_race, power_and_fpr$fpr_disease,
-      cost_effectiveness$cost_effectiveness)
+      cost_effectiveness$cost_effectiveness, net_benefits)
   })
+  
   power_age_ci <- quantile(results[1, ], c(0.025, 0.975), na.rm = TRUE)
   power_race_ci <- quantile(results[2, ], c(0.025, 0.975), na.rm = TRUE)
   power_disease_ci <- quantile(results[3, ], c(0.025, 0.975), na.rm = TRUE)
@@ -238,6 +233,7 @@ run_simulations <- function(n, method, main_effect_size, hte_effect_size, num_bo
   fpr_race_ci <- quantile(results[5, ], c(0.025, 0.975), na.rm = TRUE)
   fpr_disease_ci <- quantile(results[6, ], c(0.025, 0.975), na.rm = TRUE)
   ce_ci <- quantile(results[7, ], c(0.025, 0.975), na.rm = TRUE)
+  
   data.frame(
     method = method,
     n = n,
@@ -263,9 +259,11 @@ run_simulations <- function(n, method, main_effect_size, hte_effect_size, num_bo
     fpr_disease_upper = fpr_disease_ci[2],
     cost_effectiveness = mean(results[7, ], na.rm = TRUE),
     ce_lower = ce_ci[1],
-    ce_upper = ce_ci[2]
+    ce_upper = ce_ci[2],
+    net_benefit = colMeans(results[8:33, ], na.rm = TRUE)
   )
 }
+
 plot_results <- function(min_n = 100, max_n = 1000, step_size = 100, main_effect_sizes, hte_effect_sizes) {
   sample_sizes <- seq(min_n, max_n, by = step_size)
   results <- bind_rows(
@@ -282,86 +280,97 @@ plot_results <- function(min_n = 100, max_n = 1000, step_size = 100, main_effect
       )
     }) %>% bind_rows()
   )
+  
   power_age_plot <- ggplot(results, aes(x = n, y = power_age, color = method)) +
     geom_line() +
     geom_ribbon(aes(ymin = power_age_lower, ymax = power_age_upper, fill = method), alpha = 0.2) + ylim(0, 1) +
     labs(x = "Sample Size", y = "Power (Age HTE)", title = "Power vs Sample Size (Age HTE)") +
     theme_minimal() +
     facet_grid(main_effect_size ~ hte_effect_size, labeller = label_both)
+  
   power_race_plot <- ggplot(results, aes(x = n, y = power_race, color = method)) +
     geom_line() +
     geom_ribbon(aes(ymin = power_race_lower, ymax = power_race_upper, fill = method), alpha = 0.2) + ylim(0, 1) +
     labs(x = "Sample Size", y = "Power (Race/Ethnicity HTE)", title = "Power vs Sample Size (Race/Ethnicity HTE)") +
     theme_minimal() +
     facet_grid(main_effect_size ~ hte_effect_size, labeller = label_both)
+  
   power_disease_plot <- ggplot(results, aes(x = n, y = power_disease, color = method)) +
     geom_line() +
     geom_ribbon(aes(ymin = power_disease_lower, ymax = power_disease_upper, fill = method), alpha = 0.2) + ylim(0, 1) +
     labs(x = "Sample Size", y = "Power (Chronic Disease HTE)", title = "Power vs Sample Size (Chronic Disease HTE)") +
     theme_minimal() +
     facet_grid(main_effect_size ~ hte_effect_size, labeller = label_both)
+  
   fpr_age_plot <- ggplot(results, aes(x = n, y = fpr_age, color = method)) +
     geom_line() +
     geom_ribbon(aes(ymin = fpr_age_lower, ymax = fpr_age_upper, fill = method), alpha = 0.2) + ylim(0, 1) +
     labs(x = "Sample Size", y = "False Positive Rate (Age HTE)", title = "False Positive Rate vs Sample Size (Age HTE)") +
     theme_minimal() +
     facet_grid(main_effect_size ~ hte_effect_size, labeller = label_both)
+  
   fpr_race_plot <- ggplot(results, aes(x = n, y = fpr_race, color = method)) +
     geom_line() +
     geom_ribbon(aes(ymin = fpr_race_lower, ymax = fpr_race_upper, fill = method), alpha = 0.2) + ylim(0, 1) +
     labs(x = "Sample Size", y = "False Positive Rate (Race/Ethnicity HTE)", title = "False Positive Rate vs Sample Size (Race/Ethnicity HTE)") +
     theme_minimal() +
     facet_grid(main_effect_size ~ hte_effect_size, labeller = label_both)
+  
   fpr_disease_plot <- ggplot(results, aes(x = n, y = fpr_disease, color = method)) +
     geom_line() +
     geom_ribbon(aes(ymin = fpr_disease_lower, ymax = fpr_disease_upper, fill = method), alpha = 0.2) + ylim(0, 1) +
     labs(x = "Sample Size", y = "False Positive Rate (Chronic Disease HTE)", title = "False Positive Rate vs Sample Size (Chronic Disease HTE)") +
     theme_minimal() +
     facet_grid(main_effect_size ~ hte_effect_size, labeller = label_both)
+  
   ce_plot <- ggplot(results, aes(x = n, y = cost_effectiveness, color = method)) +
     geom_line() +
     geom_ribbon(aes(ymin = ce_lower, ymax = ce_upper, fill = method), alpha = 0.2) +
-    labs(x = "Sample Size", y = "Cost-Effectiveness (incremental $US/incremental engaged patient)", title = "Cost-Effectiveness vs Sample Size") +
+    labs(x = "Sample Size", y = "Cost-Effectiveness ($/patient engaged)", 
+         title = "Cost-Effectiveness vs Sample Size") +
     theme_minimal() +
     facet_grid(main_effect_size ~ hte_effect_size, labeller = label_both)
-  list(power_age_plot = power_age_plot, power_race_plot = power_race_plot,
-       power_disease_plot = power_disease_plot, fpr_age_plot = fpr_age_plot,
-       fpr_race_plot = fpr_race_plot, fpr_disease_plot = fpr_disease_plot,
-       ce_plot = ce_plot)
+  
+  nb_data <- results %>%
+    pivot_longer(cols = starts_with("net_benefit"), 
+                 names_to = "threshold", 
+                 values_to = "net_benefit") %>%
+    mutate(threshold = as.numeric(sub("net_benefit", "", threshold)) / 100)
+  
+  nb_plot <- ggplot(nb_data, aes(x = threshold, y = net_benefit, color = method, group = interaction(method, n, main_effect_size, hte_effect_size))) +
+    geom_line() +
+    labs(x = "Threshold Probability", y = "Net Benefit", 
+         title = "Decision Curve Analysis") +
+    theme_minimal() +
+    facet_grid(main_effect_size ~ hte_effect_size, labeller = label_both) +
+    scale_x_continuous(limits = c(0.05, 0.30), breaks = seq(0.05, 0.30, by = 0.05))
+  
+  list(power_age_plot = power_age_plot, 
+       power_race_plot = power_race_plot,
+       power_disease_plot = power_disease_plot, 
+       fpr_age_plot = fpr_age_plot,
+       fpr_race_plot = fpr_race_plot, 
+       fpr_disease_plot = fpr_disease_plot,
+       ce_plot = ce_plot,
+       nb_plot = nb_plot)
 }
+
+# Run simulations and generate plots
 main_effect_sizes <- c(0.1, 0.2, 0.3)
 hte_effect_sizes <- c(0.05, 0.1, 0.15)
 plots <- plot_results(min_n = 100, max_n = 1000, step_size = 100, main_effect_sizes, hte_effect_sizes)
-print(plots$power_age_plot)
-print(plots$power_race_plot)
-print(plots$power_disease_plot)
-print(plots$fpr_age_plot)
-print(plots$fpr_race_plot)
-print(plots$fpr_disease_plot)
-print(plots$ce_plot)
 
-# Save the power_age_plot
+# Save plots
 ggsave("power_age_plot.png", plot = plots$power_age_plot, width = 8, height = 6, dpi = 300)
-
-# Save the power_race_plot
 ggsave("power_race_plot.png", plot = plots$power_race_plot, width = 8, height = 6, dpi = 300)
-
-# Save the power_disease_plot
 ggsave("power_disease_plot.png", plot = plots$power_disease_plot, width = 8, height = 6, dpi = 300)
-
-# Save the fpr_age_plot
 ggsave("fpr_age_plot.png", plot = plots$fpr_age_plot, width = 8, height = 6, dpi = 300)
-
-# Save the fpr_race_plot
 ggsave("fpr_race_plot.png", plot = plots$fpr_race_plot, width = 8, height = 6, dpi = 300)
-
-# Save the fpr_disease_plot
 ggsave("fpr_disease_plot.png", plot = plots$fpr_disease_plot, width = 8, height = 6, dpi = 300)
-
-# Save the ce_plot
 ggsave("ce_plot.png", plot = plots$ce_plot, width = 8, height = 6, dpi = 300)
+ggsave("nb_plot.png", plot = plots$nb_plot, width = 8, height = 6, dpi = 300)
 
-
+# Generate results table
 results_table <- bind_rows(
   lapply(main_effect_sizes, function(main_effect_size) {
     lapply(hte_effect_sizes, function(hte_effect_size) {
@@ -373,4 +382,4 @@ results_table <- bind_rows(
   }) %>% bind_rows()
 )
 print(results_table)
-write.csv(results_table, file = "results_base.csv", row.names = FALSE)
+write.csv(results_table, file = "results_updated.csv", row.names = FALSE)
