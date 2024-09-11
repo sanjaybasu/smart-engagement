@@ -91,8 +91,9 @@ simulate_smart <- function(n, main_effect_size, hte_effect_size) {
   return(pop)
 }
 
-calculate_cost_effectiveness <- function(n, method, main_effect_size, hte_effect_size) {
+calculate_cost_effectiveness <- function(n, method, main_effect_size, hte_effect_size, annual_participants = 10000) {
   fixed_costs <- 89750 # Annual fixed costs
+  fixed_cost_per_participant <- fixed_costs / annual_participants
   
   if (method == "ab") {
     pop_list <- simulate_ab_tests(n, main_effect_size, hte_effect_size)
@@ -122,12 +123,12 @@ calculate_cost_effectiveness <- function(n, method, main_effect_size, hte_effect
     effectiveness <- sum(pop$engagement) / n
   }
   
-  total_cost <- fixed_costs + cost
+  total_cost <- (fixed_cost_per_participant * n) + cost
   
   if (effectiveness == 0) {
     return(list(cost = total_cost, effectiveness = effectiveness, cost_effectiveness = Inf))
   } else {
-    return(list(cost = total_cost, effectiveness = effectiveness, cost_effectiveness = total_cost / effectiveness))
+    return(list(cost = total_cost, effectiveness = effectiveness, cost_effectiveness = total_cost / (effectiveness * n)))
   }
 }
 
